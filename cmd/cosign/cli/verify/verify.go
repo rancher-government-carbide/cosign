@@ -79,6 +79,7 @@ type VerifyCommand struct {
 	TSACertChainPath             string
 	IgnoreTlog                   bool
 	MaxWorkers                   int
+	ExperimentalOCI11            bool
 }
 
 // Exec runs the verification command
@@ -88,7 +89,9 @@ func (c *VerifyCommand) Exec(ctx context.Context, images []string) (err error) {
 	}
 
 	switch c.Attachment {
-	case "sbom", "":
+	case "sbom":
+		fmt.Fprintln(os.Stderr, options.SBOMAttachmentDeprecation)
+	case "":
 		break
 	default:
 		return flag.ErrHelp
@@ -127,6 +130,7 @@ func (c *VerifyCommand) Exec(ctx context.Context, images []string) (err error) {
 		Offline:                      c.Offline,
 		IgnoreTlog:                   c.IgnoreTlog,
 		MaxWorkers:                   c.MaxWorkers,
+		ExperimentalOCI11:            c.ExperimentalOCI11,
 	}
 	if c.CheckClaims {
 		co.ClaimVerifier = cosign.SimpleClaimVerifier
