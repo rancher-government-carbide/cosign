@@ -98,7 +98,7 @@ func writeSignedEntity(path layout.Path, se oci.SignedEntity, ref name.Reference
 	// temp handle sboms - amartin120@
 	sboms, err := se.Attachment("sbom")
 	if err != nil {
-		return fmt.Errorf("getting sbom")
+		return nil //no sbom found
 	}
 	if err := appendImage(path, sboms, ref, SbomsAnnotation); err != nil {
 		return fmt.Errorf("appending attachments: %w", err)
