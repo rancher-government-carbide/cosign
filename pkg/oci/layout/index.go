@@ -27,10 +27,11 @@ import (
 const (
 	KindAnnotation       = "kind"
 	ImageAnnotation      = "dev.cosignproject.cosign/image"
-	ImageRefAnnotation = "org.opencontainers.image.ref.name"
+	ImageRefAnnotation   = "org.opencontainers.image.ref.name"
 	ImageIndexAnnotation = "dev.cosignproject.cosign/imageIndex"
 	SigsAnnotation       = "dev.cosignproject.cosign/sigs"
 	AttsAnnotation       = "dev.cosignproject.cosign/atts"
+	SbomsAnnotation      = "dev.cosignproject.cosign/sboms"
 )
 
 // SignedImageIndex provides access to a local index reference, and its signatures.

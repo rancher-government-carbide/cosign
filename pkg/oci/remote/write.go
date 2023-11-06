@@ -89,6 +89,22 @@ func WriteSignedImageIndexImages(ref name.Reference, sii oci.SignedImageIndex, o
 		}
 		return remoteWrite(attsTag, atts, o.ROpt...)
 	}
+
+	// write the attachments
+	// implementing sboms for starters
+	sboms, err := sii.Attachment("sbom")
+	if err != nil {
+		return err
+	}
+	if sboms != nil { // will be nil if there are no associated sboms
+		sbomTag, err := SBOMTag(ref, opts...)
+		if err != nil {
+			return fmt.Errorf("sbom tag: %w", err)
+		}
+		if err := remoteWrite(sbomTag, sboms, o.ROpt...); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -96,14 +112,12 @@ func WriteSignedImageIndexImages(ref name.Reference, sii oci.SignedImageIndex, o
 // Bulk version.  Uses targetRegistry for multiple images/sigs/atts.
 // This includes the signed image and associated signatures in the image index
 func WriteSignedImageIndexImagesBulk(targetRegistry string, sii oci.SignedImageIndex, opts ...Option) error {
-
 	// loop through all of the items in the manifest
 	manifest, err := sii.IndexManifest()
 	if err != nil {
 		return err
 	}
 	for _, m := range manifest.Manifests {
-
 		// write image index if exists
 		if val, ok := m.Annotations[layout.KindAnnotation]; ok && val == layout.ImageIndexAnnotation {
 			imgTitle := m.Annotations[layout.ImageRefAnnotation]
@@ -188,6 +202,26 @@ func WriteSignedImageIndexImagesBulk(targetRegistry string, sii oci.SignedImageI
 			}
 		}
 
+		// write the sboms
+		if val, ok := m.Annotations[layout.KindAnnotation]; ok && val == layout.SbomsAnnotation {
+			imgTitle := m.Annotations[layout.ImageRefAnnotation]
+			sboms, err := sii.SignedImage(m.Digest)
+			if err != nil {
+				return err
+			}
+			if sboms != nil { // will be nil if there are no associated attestations
+				ref, err := name.ParseReference(targetRegistry + "/" + imgTitle)
+				sbomsTag, err := SBOMTag(ref, opts...)
+				if err != nil {
+					return fmt.Errorf("sboms tag: %w", err)
+				}
+				repo := ref.Context()
+				o := makeOptions(repo, opts...)
+				if err := remoteWrite(sbomsTag, sboms, o.ROpt...); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return nil
 }
