@@ -22,6 +22,7 @@ import (
 // SaveOptions is the top level wrapper for the load command.
 type SaveOptions struct {
 	Directory string
+	Platform  string
 }
 
 var _ Interface = (*SaveOptions)(nil)
@@ -32,4 +33,7 @@ func (o *SaveOptions) AddFlags(cmd *cobra.Command) {
 		"path to dir where the signed image should be stored on disk")
 	_ = cmd.Flags().SetAnnotation("dir", cobra.BashCompSubdirsInDir, []string{})
 	_ = cmd.MarkFlagRequired("dir")
+	
+	cmd.Flags().StringVar(&o.Platform, "platform", "",
+	"only save container image and its signatures for a specific platform image")
 }
