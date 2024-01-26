@@ -96,24 +96,12 @@ func CleanCmd(ctx context.Context, regOpts options.RegistryOptions, cleanType op
 	for _, t := range cleanTags {
 		if err := remote.Delete(t, remoteOpts...); err != nil {
 			var te *transport.Error
-			switch {
-			case errors.As(err, &te) && te.StatusCode == http.StatusNotFound:
+			if errors.As(err, &te) && te.StatusCode == http.StatusNotFound { //nolint: revive
 				// If the tag doesn't exist, some registries may
 				// respond with a 404, which shouldn't be considered an
 				// error.
-			case errors.As(err, &te) && te.StatusCode == http.StatusBadRequest:
-				// Docker registry >=v2.3 requires does not allow deleting the OCI object name directly, must use the digest instead.
-				// See https://github.com/distribution/distribution/blob/main/docs/content/spec/api.md#deleting-an-image
-				if err := deleteByDigest(t, remoteOpts...); err != nil {
-					if errors.As(err, &te) && te.StatusCode == http.StatusNotFound { //nolint: revive
-					} else {
-						fmt.Fprintf(os.Stderr, "could not delete %s by digest from %s:\n%v\n", t, imageRef, err)
-					}
-				} else {
-					fmt.Fprintf(os.Stderr, "Removed %s from %s\n", t, imageRef)
-				}
-			default:
-				fmt.Fprintf(os.Stderr, "could not delete %s from %s:\n%v\n", t, imageRef, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "could not delete %s from %s\n: %v\n", t, imageRef, err)
 			}
 		} else {
 			fmt.Fprintf(os.Stderr, "Removed %s from %s\n", t, imageRef)
@@ -121,14 +109,6 @@ func CleanCmd(ctx context.Context, regOpts options.RegistryOptions, cleanType op
 	}
 
 	return nil
-}
-
-func deleteByDigest(tag name.Tag, opts ...remote.Option) error {
-	digestTag, err := ociremote.DockerContentDigest(tag, ociremote.WithRemoteOptions(opts...))
-	if err != nil {
-		return err
-	}
-	return remote.Delete(digestTag, opts...)
 }
 
 func prompt(cleanType options.CleanType) string {

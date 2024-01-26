@@ -207,7 +207,7 @@ func (c *VerifyCommand) Exec(ctx context.Context, images []string) (err error) {
 	certRef := c.CertRef
 
 	// Ignore Signed Certificate Timestamp if the flag is set or a key is provided
-	if shouldVerifySCT(c.IgnoreSCT, c.KeyRef, c.Sk) {
+	if !c.IgnoreSCT || keyRef != "" {
 		co.CTLogPubKeys, err = cosign.GetCTLogPubs(ctx)
 		if err != nil {
 			return fmt.Errorf("getting ctlog public keys: %w", err)
@@ -345,11 +345,7 @@ func PrintVerification(ctx context.Context, verified []oci.Signature, output str
 		for _, sig := range verified {
 			if cert, err := sig.Cert(); err == nil && cert != nil {
 				ce := cosign.CertExtensions{Cert: cert}
-				sub := ""
-				if sans := cryptoutils.GetSubjectAlternateNames(cert); len(sans) > 0 {
-					sub = sans[0]
-				}
-				ui.Infof(ctx, "Certificate subject: %s", sub)
+				ui.Infof(ctx, "Certificate subject: %s", sigs.CertSubject(cert))
 				if issuerURL := ce.GetIssuer(); issuerURL != "" {
 					ui.Infof(ctx, "Certificate issuer URL: %s", issuerURL)
 				}
@@ -402,11 +398,7 @@ func PrintVerification(ctx context.Context, verified []oci.Signature, output str
 				if ss.Optional == nil {
 					ss.Optional = make(map[string]interface{})
 				}
-				sub := ""
-				if sans := cryptoutils.GetSubjectAlternateNames(cert); len(sans) > 0 {
-					sub = sans[0]
-				}
-				ss.Optional["Subject"] = sub
+				ss.Optional["Subject"] = sigs.CertSubject(cert)
 				if issuerURL := ce.GetIssuer(); issuerURL != "" {
 					ss.Optional["Issuer"] = issuerURL
 					ss.Optional[cosign.CertExtensionOIDCIssuer] = issuerURL
@@ -504,19 +496,6 @@ func keylessVerification(keyRef string, sk bool) bool {
 		return false
 	}
 	if sk {
-		return false
-	}
-	return true
-}
-
-func shouldVerifySCT(ignoreSCT bool, keyRef string, sk bool) bool {
-	if keyRef != "" {
-		return false
-	}
-	if sk {
-		return false
-	}
-	if ignoreSCT {
 		return false
 	}
 	return true

@@ -48,7 +48,6 @@ cosign verify-blob-attestation [flags]
       --key string                                      path to the public key file, KMS URI or Kubernetes Secret
       --max-workers int                                 the amount of maximum workers for parallel executions (default 10)
       --offline                                         only allow offline verification
-      --private-infrastructure                          skip transparency log verification when verifying artifacts in a privately deployed infrastructure
       --rekor-url string                                address of rekor STL server (default "https://rekor.sigstore.dev")
       --rfc3161-timestamp string                        path to RFC3161 timestamp FILE
       --sct string                                      path to a detached Signed Certificate Timestamp, formatted as a RFC6962 AddChainResponse struct. If a certificate contains an SCT, verification will check both the detached and embedded SCTs.
@@ -56,7 +55,7 @@ cosign verify-blob-attestation [flags]
       --sk                                              whether to use a hardware security key
       --slot string                                     security key slot to use for generated key (default: signature) (authentication|signature|card-authentication|key-management)
       --timestamp-certificate-chain string              path to PEM-encoded certificate chain file for the RFC3161 timestamp authority. Must contain the root CA certificate. Optionally may contain intermediate CA certificates, and may contain the leaf TSA certificate if not present in the timestamp
-      --type string                                     specify a predicate type (slsaprovenance|slsaprovenance02|slsaprovenance1|link|spdx|spdxjson|cyclonedx|vuln|openvex|custom) or an URI (default "custom")
+      --type string                                     specify a predicate type (slsaprovenance|slsaprovenance02|slsaprovenance1|link|spdx|spdxjson|cyclonedx|vuln|custom) or an URI (default "custom")
 ```
 
 ### Options inherited from parent commands

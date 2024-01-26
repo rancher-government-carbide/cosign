@@ -25,7 +25,6 @@ import (
 	"github.com/sigstore/cosign/v2/pkg/oci"
 	"github.com/sigstore/cosign/v2/pkg/oci/layout"
 	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
-	ociplatform "github.com/sigstore/cosign/v2/pkg/oci/platform"
 	"github.com/spf13/cobra"
 )
 
@@ -40,7 +39,7 @@ func Save() *cobra.Command {
 		Args:             cobra.ExactArgs(1),
 		PersistentPreRun: options.BindViper,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return SaveCmd(cmd.Context(), *o, args[0], o.Platform)
+			return SaveCmd(cmd.Context(), *o, args[0])
 		},
 	}
 
@@ -48,7 +47,7 @@ func Save() *cobra.Command {
 	return cmd
 }
 
-func SaveCmd(_ context.Context, opts options.SaveOptions, imageRef string, platform string) error {
+func SaveCmd(_ context.Context, opts options.SaveOptions, imageRef string) error {
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
 		return fmt.Errorf("parsing image name %s: %w", imageRef, err)
@@ -57,11 +56,6 @@ func SaveCmd(_ context.Context, opts options.SaveOptions, imageRef string, platf
 	se, err := ociremote.SignedEntity(ref)
 	if err != nil {
 		return fmt.Errorf("signed entity: %w", err)
-	}
-
-	se, err = ociplatform.SignedEntityForPlatform(se, platform)
-	if err != nil {
-		return err
 	}
 
 	if _, ok := se.(oci.SignedImage); ok {

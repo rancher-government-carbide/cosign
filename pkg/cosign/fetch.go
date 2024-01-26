@@ -34,8 +34,6 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const maxAllowedSigsOrAtts = 100
-
 type SignedPayload struct {
 	Base64Signature  string
 	Payload          []byte
@@ -66,7 +64,6 @@ const (
 	Signature   = "signature"
 	SBOM        = "sbom"
 	Attestation = "attestation"
-	Digest      = "digest"
 )
 
 func FetchSignaturesForReference(_ context.Context, ref name.Reference, opts ...ociremote.Option) ([]SignedPayload, error) {
@@ -85,9 +82,6 @@ func FetchSignaturesForReference(_ context.Context, ref name.Reference, opts ...
 	}
 	if len(l) == 0 {
 		return nil, fmt.Errorf("no signatures associated with %s", ref)
-	}
-	if len(l) > maxAllowedSigsOrAtts {
-		return nil, fmt.Errorf("maximum number of signatures on an image is %d, found %d", maxAllowedSigsOrAtts, len(l))
 	}
 
 	signatures := make([]SignedPayload, len(l))
@@ -149,10 +143,6 @@ func FetchAttestations(se oci.SignedEntity, predicateType string) ([]Attestation
 	}
 	if len(l) == 0 {
 		return nil, errors.New("found no attestations")
-	}
-	if len(l) > maxAllowedSigsOrAtts {
-		errMsg := fmt.Sprintf("maximum number of attestations on an image is %d, found %d", maxAllowedSigsOrAtts, len(l))
-		return nil, errors.New(errMsg)
 	}
 
 	attestations := make([]AttestationPayload, 0, len(l))

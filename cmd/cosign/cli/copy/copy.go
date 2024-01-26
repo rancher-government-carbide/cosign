@@ -21,7 +21,6 @@ import (
 	"net/http"
 	"os"
 	"runtime"
-	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -33,12 +32,11 @@ import (
 	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
 	"github.com/sigstore/cosign/v2/pkg/oci/walk"
 	"golang.org/x/sync/errgroup"
-	"k8s.io/apimachinery/pkg/util/sets"
 )
 
 // CopyCmd implements the logic to copy the supplied container image and signatures.
 // nolint
-func CopyCmd(ctx context.Context, regOpts options.RegistryOptions, srcImg, dstImg string, sigOnly, force bool, copyOnly, platform string) error {
+func CopyCmd(ctx context.Context, regOpts options.RegistryOptions, srcImg, dstImg string, sigOnly, force bool, platform string) error {
 	no := regOpts.NameOptions()
 	srcRef, err := name.ParseReference(srcImg, no...)
 	if err != nil {
@@ -79,13 +77,6 @@ func CopyCmd(ctx context.Context, regOpts options.RegistryOptions, srcImg, dstIm
 		return err
 	}
 
-	onlyFlagSet := false
-	tags := parseOnlyOpt(copyOnly, sigOnly)
-	if len(tags) > 0 {
-		onlyFlagSet = true
-	} else {
-		tags = []tagMap{ociremote.SignatureTag, ociremote.AttestationTag, ociremote.SBOMTag}
-	}
 	if err := walk.SignedEntity(gctx, root, func(ctx context.Context, se oci.SignedEntity) error {
 		// Both of the SignedEntity types implement Digest()
 		h, err := se.Digest()
@@ -108,7 +99,15 @@ func CopyCmd(ctx context.Context, regOpts options.RegistryOptions, srcImg, dstIm
 			return nil
 		}
 
-		for _, tm := range tags {
+		if err := copyTag(ociremote.SignatureTag); err != nil {
+			return err
+		}
+
+		if sigOnly {
+			return nil
+		}
+
+		for _, tm := range []tagMap{ociremote.AttestationTag, ociremote.SBOMTag} {
 			if err := copyTag(tm); err != nil {
 				return err
 			}
@@ -131,8 +130,8 @@ func CopyCmd(ctx context.Context, regOpts options.RegistryOptions, srcImg, dstIm
 		return err
 	}
 
-	// If we're only copying sig/att/sbom, we have nothing left to do.
-	if onlyFlagSet {
+	// If we're only copying sigs, we have nothing left to do.
+	if sigOnly {
 		return nil
 	}
 
@@ -178,25 +177,4 @@ func remoteCopy(ctx context.Context, pusher *remote.Pusher, src, dest name.Refer
 
 	fmt.Fprintf(os.Stderr, "Copying %s to %s...\n", src, dest)
 	return pusher.Push(ctx, dest, got)
-}
-
-func parseOnlyOpt(onlyFlag string, sigOnly bool) []tagMap {
-	var tags []tagMap
-	tagSet := sets.New(strings.Split(onlyFlag, ",")...)
-
-	if sigOnly {
-		fmt.Fprintf(os.Stderr, "--sig-only is deprecated, use --only=sig instead")
-		tagSet.Insert("sign")
-	}
-
-	if tagSet.Has("sig") {
-		tags = append(tags, ociremote.SignatureTag)
-	}
-	if tagSet.Has("sbom") {
-		tags = append(tags, ociremote.SBOMTag)
-	}
-	if tagSet.Has("att") {
-		tags = append(tags, ociremote.AttestationTag)
-	}
-	return tags
 }
