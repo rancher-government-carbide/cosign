@@ -9,7 +9,24 @@ cosign attach signature [flags]
 ### Examples
 
 ```
-  cosign attach signature <image uri>
+  cosign attach signature [--payload <path>] [--signature < path>] [--rekor-response < path>] <image uri>
+
+		cosign attach signature command attaches payload, signature, rekor-bundle, etc in a new layer of provided image.
+		
+		# Attach signature can attach payload to a supplied image
+		cosign attach signature --payload <payload.json>  $IMAGE
+
+		# Attach signature can attach payload, signature to a supplied image
+		cosign attach signature --payload <payload.json> --signature <base64 signature file> $IMAGE
+
+		# Attach signature can attach payload, signature, time stamped response to a supplied image
+		cosign attach signature --payload <payload.json> --signature <base64 signature file> --tsr=<file> $IMAGE
+
+		# Attach signature attaches payload, signature and rekor-bundle via rekor-response to a supplied image
+		cosign attach signature --payload <payload.json> --signature <base64 signature file>  --rekor-response <proper rekor-response format file> $IMAGE
+
+		# Attach signature attaches payload, signature and rekor-bundle directly to a supplied image
+		cosign attach signature --payload <payload.json> --signature <base64 signature file>  --rekor-response <rekor-bundle file> $IMAGE
 ```
 
 ### Options
@@ -23,6 +40,10 @@ cosign attach signature [flags]
   -h, --help                                                                                     help for signature
       --k8s-keychain                                                                             whether to use the kubernetes keychain instead of the default keychain (supports workload identity).
       --payload string                                                                           path to the payload covered by the signature
+      --registry-password string                                                                 registry basic auth password
+      --registry-token string                                                                    registry bearer auth token
+      --registry-username string                                                                 registry basic auth username
+      --rekor-response string                                                                    path to the rekor bundle
       --signature string                                                                         path to the signature, or {-} for stdin
       --tsr string                                                                               path to the Time Stamped Signature Response from RFC3161 compliant TSA
 ```
