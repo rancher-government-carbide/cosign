@@ -47,7 +47,7 @@ jobs:
       COSIGN_YES: "true"
 
     steps:
-    - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
+    - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
     - uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8bcfbe # v4.1.0
       with:
         go-version: '1.21'
@@ -57,7 +57,7 @@ jobs:
     - uses: ko-build/setup-ko@ace48d793556083a76f1e3e6068850c1f4a369aa # v0.6
 
     - name: Install yq
-      uses: mikefarah/yq@a198f72367ce9da70b564a2cc25399de8e27bf37 # v4.35.2
+      uses: mikefarah/yq@1c3d55106075bd37df197b4bc03cb4a413fdb903 # v4.40.4
 
     - name: build cosign
       run: |

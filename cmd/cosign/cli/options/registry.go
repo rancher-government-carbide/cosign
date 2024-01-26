@@ -45,6 +45,7 @@ type RegistryOptions struct {
 	Name               string
 	RefOpts            ReferenceOptions
 	Keychain           Keychain
+	AuthConfig         authn.AuthConfig
 
 	// RegistryClientOpts allows overriding the result of GetRegistryClientOpts.
 	RegistryClientOpts []remote.Option
@@ -62,6 +63,15 @@ func (o *RegistryOptions) AddFlags(cmd *cobra.Command) {
 
 	cmd.Flags().BoolVar(&o.KubernetesKeychain, "k8s-keychain", false,
 		"whether to use the kubernetes keychain instead of the default keychain (supports workload identity).")
+
+	cmd.Flags().StringVar(&o.AuthConfig.Username, "registry-username", "",
+		"registry basic auth username")
+
+	cmd.Flags().StringVar(&o.AuthConfig.Password, "registry-password", "",
+		"registry basic auth password")
+
+	cmd.Flags().StringVar(&o.AuthConfig.RegistryToken, "registry-token", "",
+		"registry bearer auth token")
 
 	o.RefOpts.AddFlags(cmd)
 }
@@ -114,6 +124,10 @@ func (o *RegistryOptions) GetRegistryClientOpts(ctx context.Context) []remote.Op
 			github.Keychain,
 		)
 		opts = append(opts, remote.WithAuthFromKeychain(kc))
+	case o.AuthConfig.Username != "" && o.AuthConfig.Password != "":
+		opts = append(opts, remote.WithAuth(&authn.Basic{Username: o.AuthConfig.Username, Password: o.AuthConfig.Password}))
+	case o.AuthConfig.RegistryToken != "":
+		opts = append(opts, remote.WithAuth(&authn.Bearer{Token: o.AuthConfig.RegistryToken}))
 	default:
 		opts = append(opts, remote.WithAuthFromKeychain(authn.DefaultKeychain))
 	}
