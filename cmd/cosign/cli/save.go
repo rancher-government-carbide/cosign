@@ -65,7 +65,7 @@ func SaveCmd(_ context.Context, opts options.SaveOptions, imageRef string, platf
 	}
 
 	if _, ok := se.(oci.SignedImage); ok {
-		si, err := ociremote.SignedImage(ref)
+		si := se.(oci.SignedImage)
 		if err != nil {
 			return fmt.Errorf("getting signed image: %w", err)
 		}
@@ -73,7 +73,7 @@ func SaveCmd(_ context.Context, opts options.SaveOptions, imageRef string, platf
 	}
 
 	if _, ok := se.(oci.SignedImageIndex); ok {
-		sii, err := ociremote.SignedImageIndex(ref)
+		sii := se.(oci.SignedImageIndex)
 		if err != nil {
 			return fmt.Errorf("getting signed image index: %w", err)
 		}
