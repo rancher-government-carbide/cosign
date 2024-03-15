@@ -24,8 +24,8 @@ import (
 	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
 	"github.com/sigstore/cosign/v2/pkg/oci"
 	"github.com/sigstore/cosign/v2/pkg/oci/layout"
-	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
 	ociplatform "github.com/sigstore/cosign/v2/pkg/oci/platform"
+	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
 	"github.com/spf13/cobra"
 )
 
@@ -73,6 +73,6 @@ func SaveCmd(_ context.Context, opts options.SaveOptions, imageRef string) error
 		sii := se.(oci.SignedImageIndex)
 		return layout.WriteSignedImageIndex(opts.Directory, sii, ref)
 	}
-	
+
 	return errors.New("unknown signed entity")
 }
