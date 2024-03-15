@@ -21,11 +21,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/google/go-containerregistry/pkg/v1/match"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
+	"github.com/google/go-containerregistry/pkg/v1/match"
 	"github.com/sigstore/cosign/v2/pkg/oci"
 )
 
@@ -66,7 +66,7 @@ func WriteSignedImageIndex(path string, si oci.SignedImageIndex, ref name.Refere
 	digest, err := si.Digest()
 	if err != nil {
 		return err
-	}	
+	}
 	if err := layoutPath.ReplaceIndex(si, match.Digests(digest), layout.WithAnnotations(
 		map[string]string{KindAnnotation: ImageIndexAnnotation, ImageRefAnnotation: imageRef},
 	)); err != nil {
@@ -98,12 +98,12 @@ func writeSignedEntity(path layout.Path, se oci.SignedEntity, ref name.Reference
 			return fmt.Errorf("appending atts: %w", err)
 		}
 	}
-	
+
 	// TODO (priyawadhwa@) and attachments
 	// temp handle sboms - amartin120@
 	sboms, err := se.Attachment("sbom")
 	if err != nil {
-		return nil //no sbom found
+		return nil // no sbom found
 	}
 	if err := appendImage(path, sboms, ref, SbomsAnnotation); err != nil {
 		return fmt.Errorf("appending attachments: %w", err)
@@ -125,7 +125,7 @@ func appendImage(path layout.Path, img v1.Image, ref name.Reference, annotation 
 	digest, err := img.Digest()
 	if err != nil {
 		return err
-	}	
+	}
 	return path.ReplaceImage(img, match.Digests(digest), layout.WithAnnotations(
 		map[string]string{KindAnnotation: annotation, ImageRefAnnotation: imageRef},
 	))

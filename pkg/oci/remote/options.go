@@ -45,7 +45,7 @@ type options struct {
 	ROpt              []remote.Option
 	NameOpts          []name.Option
 	OriginalOptions   []Option
-	CachePath		  string
+	CachePath         string
 }
 
 var defaultOptions = []remote.Option{
