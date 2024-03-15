@@ -40,7 +40,7 @@ func Save() *cobra.Command {
 		Args:             cobra.ExactArgs(1),
 		PersistentPreRun: options.BindViper,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return SaveCmd(cmd.Context(), *o, args[0], o.Platform)
+			return SaveCmd(cmd.Context(), *o, args[0])
 		},
 	}
 
@@ -48,18 +48,18 @@ func Save() *cobra.Command {
 	return cmd
 }
 
-func SaveCmd(_ context.Context, opts options.SaveOptions, imageRef string, platform string) error {
+func SaveCmd(_ context.Context, opts options.SaveOptions, imageRef string) error {
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
 		return fmt.Errorf("parsing image name %s: %w", imageRef, err)
 	}
 
-	se, err := ociremote.SignedEntity(ref)
+	se, err := ociremote.SignedEntity(ref, ociremote.WithCachePath(opts.CachePath))
 	if err != nil {
 		return fmt.Errorf("signed entity: %w", err)
 	}
 
-	se, err = ociplatform.SignedEntityForPlatform(se, platform)
+	se, err = ociplatform.SignedEntityForPlatform(se, opts.Platform)
 	if err != nil {
 		return err
 	}

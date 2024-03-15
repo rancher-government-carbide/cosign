@@ -23,6 +23,7 @@ import (
 type SaveOptions struct {
 	Directory string
 	Platform  string
+	CachePath string
 }
 
 var _ Interface = (*SaveOptions)(nil)
@@ -36,4 +37,7 @@ func (o *SaveOptions) AddFlags(cmd *cobra.Command) {
 	
 	cmd.Flags().StringVar(&o.Platform, "platform", "",
 	"only save container image and its signatures for a specific platform image")
+
+	cmd.Flags().StringVarP(&o.CachePath, "cache-path", "c", "",
+	"path to cache image layers")
 }
