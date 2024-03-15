@@ -24,11 +24,12 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -54,12 +55,15 @@ import (
 	"github.com/sigstore/cosign/v2/cmd/cosign/cli"
 	"github.com/sigstore/cosign/v2/cmd/cosign/cli/attach"
 	"github.com/sigstore/cosign/v2/cmd/cosign/cli/attest"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/dockerfile"
 	"github.com/sigstore/cosign/v2/cmd/cosign/cli/download"
 	"github.com/sigstore/cosign/v2/cmd/cosign/cli/generate"
+	"github.com/sigstore/cosign/v2/cmd/cosign/cli/manifest"
 	"github.com/sigstore/cosign/v2/cmd/cosign/cli/options"
 	"github.com/sigstore/cosign/v2/cmd/cosign/cli/publickey"
 	"github.com/sigstore/cosign/v2/cmd/cosign/cli/sign"
 	cliverify "github.com/sigstore/cosign/v2/cmd/cosign/cli/verify"
+	"github.com/sigstore/cosign/v2/internal/pkg/cosign/fulcio/fulcioroots"
 	"github.com/sigstore/cosign/v2/internal/pkg/cosign/tsa"
 	"github.com/sigstore/cosign/v2/internal/pkg/cosign/tsa/client"
 	"github.com/sigstore/cosign/v2/pkg/cosign"
@@ -76,9 +80,9 @@ import (
 )
 
 const (
-	serverEnv = "REKOR_SERVER"
 	rekorURL  = "http://127.0.0.1:3000"
 	fulcioURL = "http://127.0.0.1:5555"
+	certID    = "foo@bar.com"
 )
 
 var keyPass = []byte("hello")
@@ -87,7 +91,7 @@ var passFunc = func(_ bool) ([]byte, error) {
 	return keyPass, nil
 }
 
-var verify = func(keyRef, imageRef string, checkClaims bool, annotations map[string]interface{}, attachment string) error {
+var verify = func(keyRef, imageRef string, checkClaims bool, annotations map[string]interface{}, attachment string, skipTlogVerify bool) error {
 	cmd := cliverify.VerifyCommand{
 		KeyRef:        keyRef,
 		RekorURL:      rekorURL,
@@ -95,8 +99,8 @@ var verify = func(keyRef, imageRef string, checkClaims bool, annotations map[str
 		Annotations:   sigs.AnnotationsMap{Annotations: annotations},
 		Attachment:    attachment,
 		HashAlgorithm: crypto.SHA256,
-		IgnoreTlog:    true,
 		MaxWorkers:    10,
+		IgnoreTlog:    skipTlogVerify,
 	}
 
 	args := []string{imageRef}
@@ -107,6 +111,7 @@ var verify = func(keyRef, imageRef string, checkClaims bool, annotations map[str
 var verifyTSA = func(keyRef, imageRef string, checkClaims bool, annotations map[string]interface{}, attachment, tsaCertChain string, skipTlogVerify bool) error {
 	cmd := cliverify.VerifyCommand{
 		KeyRef:           keyRef,
+		RekorURL:         rekorURL,
 		CheckClaims:      checkClaims,
 		Annotations:      sigs.AnnotationsMap{Annotations: annotations},
 		Attachment:       attachment,
@@ -127,6 +132,7 @@ var verifyKeylessTSA = func(imageRef string, tsaCertChain string, skipSCT bool, 
 			CertOidcIssuerRegexp: ".*",
 			CertIdentityRegexp:   ".*",
 		},
+		RekorURL:         rekorURL,
 		HashAlgorithm:    crypto.SHA256,
 		TSACertChainPath: tsaCertChain,
 		IgnoreSCT:        skipSCT,
@@ -143,12 +149,12 @@ var verifyKeylessTSA = func(imageRef string, tsaCertChain string, skipSCT bool, 
 var verifyLocal = func(keyRef, path string, checkClaims bool, annotations map[string]interface{}, attachment string) error {
 	cmd := cliverify.VerifyCommand{
 		KeyRef:        keyRef,
+		RekorURL:      rekorURL,
 		CheckClaims:   checkClaims,
 		Annotations:   sigs.AnnotationsMap{Annotations: annotations},
 		Attachment:    attachment,
 		HashAlgorithm: crypto.SHA256,
 		LocalImage:    true,
-		IgnoreTlog:    true,
 		MaxWorkers:    10,
 	}
 
@@ -157,12 +163,34 @@ var verifyLocal = func(keyRef, path string, checkClaims bool, annotations map[st
 	return cmd.Exec(context.Background(), args)
 }
 
+var verifyOffline = func(keyRef, imageRef string, checkClaims bool, annotations map[string]interface{}, attachment string) error {
+	cmd := cliverify.VerifyCommand{
+		KeyRef:        keyRef,
+		RekorURL:      "notreal",
+		Offline:       true,
+		CheckClaims:   checkClaims,
+		Annotations:   sigs.AnnotationsMap{Annotations: annotations},
+		Attachment:    attachment,
+		HashAlgorithm: crypto.SHA256,
+		MaxWorkers:    10,
+	}
+
+	args := []string{imageRef}
+
+	return cmd.Exec(context.Background(), args)
+}
+
 var ro = &options.RootOptions{Timeout: options.DefaultTimeout}
 
 func TestSignVerify(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	repo, stop := reg(t)
 	defer stop()
-	td := t.TempDir()
 
 	imgName := path.Join(repo, "cosign-e2e")
 
@@ -173,23 +201,29 @@ func TestSignVerify(t *testing.T) {
 
 	ctx := context.Background()
 	// Verify should fail at first
-	mustErr(verify(pubKeyPath, imgName, true, nil, ""), t)
+	mustErr(verify(pubKeyPath, imgName, true, nil, "", false), t)
 	// So should download
 	mustErr(download.SignatureCmd(ctx, options.RegistryOptions{}, imgName), t)
 
 	// Now sign the image
-	ko := options.KeyOpts{KeyRef: privKeyPath, PassFunc: passFunc}
+	ko := options.KeyOpts{
+		KeyRef:           privKeyPath,
+		PassFunc:         passFunc,
+		RekorURL:         rekorURL,
+		SkipConfirmation: true,
+	}
 	so := options.SignOptions{
-		Upload: true,
+		Upload:     true,
+		TlogUpload: true,
 	}
 	must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
 
 	// Now verify and download should work!
-	must(verify(pubKeyPath, imgName, true, nil, ""), t)
+	must(verify(pubKeyPath, imgName, true, nil, "", false), t)
 	must(download.SignatureCmd(ctx, options.RegistryOptions{}, imgName), t)
 
 	// Look for a specific annotation
-	mustErr(verify(pubKeyPath, imgName, true, map[string]interface{}{"foo": "bar"}, ""), t)
+	mustErr(verify(pubKeyPath, imgName, true, map[string]interface{}{"foo": "bar"}, "", false), t)
 
 	so.AnnotationOptions = options.AnnotationOptions{
 		Annotations: []string{"foo=bar"},
@@ -198,16 +232,21 @@ func TestSignVerify(t *testing.T) {
 	must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
 
 	// It should match this time.
-	must(verify(pubKeyPath, imgName, true, map[string]interface{}{"foo": "bar"}, ""), t)
+	must(verify(pubKeyPath, imgName, true, map[string]interface{}{"foo": "bar"}, "", false), t)
 
 	// But two doesn't work
-	mustErr(verify(pubKeyPath, imgName, true, map[string]interface{}{"foo": "bar", "baz": "bat"}, ""), t)
+	mustErr(verify(pubKeyPath, imgName, true, map[string]interface{}{"foo": "bar", "baz": "bat"}, "", false), t)
 }
 
 func TestSignVerifyClean(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	repo, stop := reg(t)
 	defer stop()
-	td := t.TempDir()
 
 	imgName := path.Join(repo, "cosign-e2e")
 
@@ -218,28 +257,38 @@ func TestSignVerifyClean(t *testing.T) {
 	ctx := context.Background()
 
 	// Now sign the image
-	ko := options.KeyOpts{KeyRef: privKeyPath, PassFunc: passFunc}
+	ko := options.KeyOpts{
+		KeyRef:           privKeyPath,
+		PassFunc:         passFunc,
+		RekorURL:         rekorURL,
+		SkipConfirmation: true,
+	}
 	so := options.SignOptions{
-		Upload: true,
+		Upload:     true,
+		TlogUpload: true,
 	}
 	must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
 
 	// Now verify and download should work!
-	must(verify(pubKeyPath, imgName, true, nil, ""), t)
+	must(verify(pubKeyPath, imgName, true, nil, "", false), t)
 	must(download.SignatureCmd(ctx, options.RegistryOptions{}, imgName), t)
 
 	// Now clean signature from the given image
 	must(cli.CleanCmd(ctx, options.RegistryOptions{}, "all", imgName, true), t)
 
 	// It doesn't work
-	mustErr(verify(pubKeyPath, imgName, true, nil, ""), t)
+	mustErr(verify(pubKeyPath, imgName, true, nil, "", false), t)
 }
 
 func TestImportSignVerifyClean(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	repo, stop := reg(t)
 	defer stop()
-	td := t.TempDir()
 
 	imgName := path.Join(repo, "cosign-e2e")
 
@@ -250,21 +299,27 @@ func TestImportSignVerifyClean(t *testing.T) {
 	ctx := context.Background()
 
 	// Now sign the image
-	ko := options.KeyOpts{KeyRef: privKeyPath, PassFunc: passFunc}
+	ko := options.KeyOpts{
+		KeyRef:           privKeyPath,
+		PassFunc:         passFunc,
+		RekorURL:         rekorURL,
+		SkipConfirmation: true,
+	}
 	so := options.SignOptions{
-		Upload: true,
+		Upload:     true,
+		TlogUpload: true,
 	}
 	must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
 
 	// Now verify and download should work!
-	must(verify(pubKeyPath, imgName, true, nil, ""), t)
+	must(verify(pubKeyPath, imgName, true, nil, "", false), t)
 	must(download.SignatureCmd(ctx, options.RegistryOptions{}, imgName), t)
 
 	// Now clean signature from the given image
 	must(cli.CleanCmd(ctx, options.RegistryOptions{}, "all", imgName, true), t)
 
 	// It doesn't work
-	mustErr(verify(pubKeyPath, imgName, true, nil, ""), t)
+	mustErr(verify(pubKeyPath, imgName, true, nil, "", false), t)
 }
 
 func TestAttestVerify(t *testing.T) {
@@ -380,7 +435,7 @@ func attestVerify(t *testing.T, predicateType, attestation, goodCue, badCue stri
 	must(verifyAttestation.Exec(ctx, []string{imgName}), t)
 
 	// Look for a specific annotation
-	mustErr(verify(pubKeyPath, imgName, true, map[string]interface{}{"foo": "bar"}, ""), t)
+	mustErr(verify(pubKeyPath, imgName, true, map[string]interface{}{"foo": "bar"}, "", false), t)
 }
 
 func TestAttestationDownload(t *testing.T) {
@@ -879,9 +934,6 @@ func TestAttachWithRFC3161Timestamp(t *testing.T) {
 	pemSub := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: subCert.Raw})
 	pemLeaf := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafCert.Raw})
 
-	rootPool := x509.NewCertPool()
-	rootPool.AddCert(rootCert)
-
 	payloadref := mkfile(b.String(), td, t)
 
 	h := sha256.Sum256(b.Bytes())
@@ -952,9 +1004,6 @@ func TestAttachWithRekorBundle(t *testing.T) {
 	pemSub := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: subCert.Raw})
 	pemLeaf := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafCert.Raw})
 
-	rootPool := x509.NewCertPool()
-	rootPool.AddCert(rootCert)
-
 	payloadref := mkfile(b.String(), td, t)
 
 	h := sha256.Sum256(b.Bytes())
@@ -999,12 +1048,14 @@ func TestAttachWithRekorBundle(t *testing.T) {
 }
 
 func TestRekorBundle(t *testing.T) {
-	// turn on the tlog
-	defer setenv(t, env.VariableExperimental.String(), "1")()
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	repo, stop := reg(t)
 	defer stop()
-	td := t.TempDir()
 
 	imgName := path.Join(repo, "cosign-e2e")
 
@@ -1014,29 +1065,34 @@ func TestRekorBundle(t *testing.T) {
 	_, privKeyPath, pubKeyPath := keypair(t, td)
 
 	ko := options.KeyOpts{
-		KeyRef:   privKeyPath,
-		PassFunc: passFunc,
-		RekorURL: rekorURL,
+		KeyRef:           privKeyPath,
+		PassFunc:         passFunc,
+		RekorURL:         rekorURL,
+		SkipConfirmation: true,
 	}
 	so := options.SignOptions{
-		Upload: true,
+		Upload:     true,
+		TlogUpload: true,
 	}
 
 	// Sign the image
 	must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
 	// Make sure verify works
-	must(verify(pubKeyPath, imgName, true, nil, ""), t)
+	must(verify(pubKeyPath, imgName, true, nil, "", false), t)
 
 	// Make sure offline verification works with bundling
-	// use rekor prod since we have hardcoded the public key
-	os.Setenv(serverEnv, "notreal")
-	must(verify(pubKeyPath, imgName, true, nil, ""), t)
+	must(verifyOffline(pubKeyPath, imgName, true, nil, ""), t)
 }
 
 func TestRekorOutput(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	repo, stop := reg(t)
 	defer stop()
-	td := t.TempDir()
 
 	imgName := path.Join(repo, "cosign-e2e")
 	bundlePath := filepath.Join(td, "bundle.sig")
@@ -1053,13 +1109,14 @@ func TestRekorOutput(t *testing.T) {
 		BundlePath: bundlePath,
 	}
 	so := options.SignOptions{
-		Upload: true,
+		Upload:     true,
+		TlogUpload: true,
 	}
 
 	// Sign the image
 	must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
 	// Make sure verify works
-	must(verify(pubKeyPath, imgName, true, nil, ""), t)
+	must(verify(pubKeyPath, imgName, true, nil, "", false), t)
 
 	if file, err := os.ReadFile(bundlePath); err != nil {
 		t.Fatal(err)
@@ -1070,15 +1127,18 @@ func TestRekorOutput(t *testing.T) {
 		}
 	}
 	// Make sure offline verification works with bundling
-	// use rekor prod since we have hardcoded the public key
-	os.Setenv(serverEnv, "notreal")
-	must(verify(pubKeyPath, imgName, true, nil, ""), t)
+	must(verifyOffline(pubKeyPath, imgName, true, nil, ""), t)
 }
 
 func TestFulcioBundle(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	repo, stop := reg(t)
 	defer stop()
-	td := t.TempDir()
 
 	imgName := path.Join(repo, "cosign-e2e")
 
@@ -1088,25 +1148,26 @@ func TestFulcioBundle(t *testing.T) {
 	_, privKeyPath, pubKeyPath := keypair(t, td)
 
 	ko := options.KeyOpts{
-		KeyRef:    privKeyPath,
-		PassFunc:  passFunc,
-		RekorURL:  rekorURL,
-		FulcioURL: fulcioURL,
+		KeyRef:           privKeyPath,
+		PassFunc:         passFunc,
+		RekorURL:         rekorURL,
+		FulcioURL:        fulcioURL,
+		SkipConfirmation: true,
 	}
 	so := options.SignOptions{
 		Upload:           true,
+		TlogUpload:       true,
 		IssueCertificate: true,
 	}
 
 	// Sign the image
 	must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
 	// Make sure verify works
-	must(verify(pubKeyPath, imgName, true, nil, ""), t)
+	must(verify(pubKeyPath, imgName, true, nil, "", false), t)
 
 	// Make sure offline verification works with bundling
 	// use rekor prod since we have hardcoded the public key
-	os.Setenv(serverEnv, "notreal")
-	must(verify(pubKeyPath, imgName, true, nil, ""), t)
+	must(verifyOffline(pubKeyPath, imgName, true, nil, ""), t)
 }
 
 func TestRFC3161Timestamp(t *testing.T) {
@@ -1165,6 +1226,12 @@ func TestRFC3161Timestamp(t *testing.T) {
 }
 
 func TestRekorBundleAndRFC3161Timestamp(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	// TSA server needed to create timestamp
 	viper.Set("timestamp-signer", "memory")
 	viper.Set("timestamp-signer-hash", "sha256")
@@ -1194,7 +1261,6 @@ func TestRekorBundleAndRFC3161Timestamp(t *testing.T) {
 
 	repo, stop := reg(t)
 	defer stop()
-	td := t.TempDir()
 
 	imgName := path.Join(repo, "cosign-e2e")
 
@@ -1222,9 +1288,14 @@ func TestRekorBundleAndRFC3161Timestamp(t *testing.T) {
 }
 
 func TestDuplicateSign(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	repo, stop := reg(t)
 	defer stop()
-	td := t.TempDir()
 
 	imgName := path.Join(repo, "cosign-e2e")
 
@@ -1235,19 +1306,23 @@ func TestDuplicateSign(t *testing.T) {
 
 	ctx := context.Background()
 	// Verify should fail at first
-	mustErr(verify(pubKeyPath, imgName, true, nil, ""), t)
+	mustErr(verify(pubKeyPath, imgName, true, nil, "", true), t)
 	// So should download
 	mustErr(download.SignatureCmd(ctx, options.RegistryOptions{}, imgName), t)
 
 	// Now sign the image
-	ko := options.KeyOpts{KeyRef: privKeyPath, PassFunc: passFunc}
+	ko := options.KeyOpts{
+		KeyRef:   privKeyPath,
+		PassFunc: passFunc,
+	}
 	so := options.SignOptions{
 		Upload: true,
 	}
 	must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
 
 	// Now verify and download should work!
-	must(verify(pubKeyPath, imgName, true, nil, ""), t)
+	// Ignore the tlog, because uploading to the tlog causes new signatures with new timestamp entries to be appended.
+	must(verify(pubKeyPath, imgName, true, nil, "", true), t)
 	must(download.SignatureCmd(ctx, options.RegistryOptions{}, imgName), t)
 
 	// Signing again should work just fine...
@@ -1272,11 +1347,11 @@ func TestKeyURLVerify(t *testing.T) {
 	keyRef := "https://raw.githubusercontent.com/GoogleContainerTools/distroless/main/cosign.pub"
 	img := "gcr.io/distroless/base:latest"
 
-	must(verify(keyRef, img, true, nil, ""), t)
+	must(verify(keyRef, img, true, nil, "", false), t)
 }
 
 func TestGenerateKeyPairEnvVar(t *testing.T) {
-	defer setenv(t, "COSIGN_PASSWORD", "foo")()
+	t.Setenv("COSIGN_PASSWORD", "foo")
 	keys, err := cosign.GenerateKeyPair(generate.GetPass)
 	if err != nil {
 		t.Fatal(err)
@@ -1299,7 +1374,7 @@ func TestGenerateKeyPairK8s(t *testing.T) {
 		os.Chdir(wd)
 	}()
 	password := "foo"
-	defer setenv(t, "COSIGN_PASSWORD", password)()
+	t.Setenv("COSIGN_PASSWORD", password)
 	ctx := context.Background()
 	name := "cosign-secret"
 	namespace := "default"
@@ -1332,6 +1407,12 @@ func TestGenerateKeyPairK8s(t *testing.T) {
 }
 
 func TestMultipleSignatures(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	repo, stop := reg(t)
 	defer stop()
 
@@ -1347,36 +1428,43 @@ func TestMultipleSignatures(t *testing.T) {
 	_, priv2, pub2 := keypair(t, td2)
 
 	// Verify should fail at first for both keys
-	mustErr(verify(pub1, imgName, true, nil, ""), t)
-	mustErr(verify(pub2, imgName, true, nil, ""), t)
+	mustErr(verify(pub1, imgName, true, nil, "", false), t)
+	mustErr(verify(pub2, imgName, true, nil, "", false), t)
 
 	// Now sign the image with one key
-	ko := options.KeyOpts{KeyRef: priv1, PassFunc: passFunc}
+	ko := options.KeyOpts{
+		KeyRef:           priv1,
+		PassFunc:         passFunc,
+		RekorURL:         rekorURL,
+		SkipConfirmation: true,
+	}
 	so := options.SignOptions{
-		Upload: true,
+		Upload:     true,
+		TlogUpload: true,
 	}
 	must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
 	// Now verify should work with that one, but not the other
-	must(verify(pub1, imgName, true, nil, ""), t)
-	mustErr(verify(pub2, imgName, true, nil, ""), t)
+	must(verify(pub1, imgName, true, nil, "", false), t)
+	mustErr(verify(pub2, imgName, true, nil, "", false), t)
 
 	// Now sign with the other key too
 	ko.KeyRef = priv2
 	must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
 
 	// Now verify should work with both
-	must(verify(pub1, imgName, true, nil, ""), t)
-	must(verify(pub2, imgName, true, nil, ""), t)
+	must(verify(pub1, imgName, true, nil, "", false), t)
+	must(verify(pub2, imgName, true, nil, "", false), t)
 }
 
 func TestSignBlob(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
 	blob := "someblob"
 	td1 := t.TempDir()
 	td2 := t.TempDir()
-	t.Cleanup(func() {
-		os.RemoveAll(td1)
-		os.RemoveAll(td2)
-	})
 	bp := filepath.Join(td1, blob)
 
 	if err := os.WriteFile(bp, []byte(blob), 0644); err != nil {
@@ -1427,13 +1515,15 @@ func TestSignBlob(t *testing.T) {
 func TestSignBlobBundle(t *testing.T) {
 	blob := "someblob"
 	td1 := t.TempDir()
-	t.Cleanup(func() {
-		os.RemoveAll(td1)
-	})
 	bp := filepath.Join(td1, blob)
 	bundlePath := filepath.Join(td1, "bundle.sig")
 
 	if err := os.WriteFile(bp, []byte(blob), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td1)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -1472,12 +1562,17 @@ func TestSignBlobBundle(t *testing.T) {
 	}
 
 	// Point to a fake rekor server to make sure offline verification of the tlog entry works
-	os.Setenv(serverEnv, "notreal")
+	verifyBlobCmd.RekorURL = "notreal"
 	verifyBlobCmd.IgnoreTlog = false
 	must(verifyBlobCmd.Exec(ctx, bp), t)
 }
 
 func TestSignBlobRFC3161TimestampBundle(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// TSA server needed to create timestamp
 	viper.Set("timestamp-signer", "memory")
 	viper.Set("timestamp-signer-hash", "sha256")
@@ -1486,13 +1581,9 @@ func TestSignBlobRFC3161TimestampBundle(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	blob := "someblob"
-	td1 := t.TempDir()
-	t.Cleanup(func() {
-		os.RemoveAll(td1)
-	})
-	bp := filepath.Join(td1, blob)
-	bundlePath := filepath.Join(td1, "bundle.sig")
-	tsPath := filepath.Join(td1, "rfc3161Timestamp.json")
+	bp := filepath.Join(td, blob)
+	bundlePath := filepath.Join(td, "bundle.sig")
+	tsPath := filepath.Join(td, "rfc3161Timestamp.json")
 
 	if err := os.WriteFile(bp, []byte(blob), 0644); err != nil {
 		t.Fatal(err)
@@ -1518,7 +1609,7 @@ func TestSignBlobRFC3161TimestampBundle(t *testing.T) {
 		t.Fatalf("error writing chain payload to temp file: %v", err)
 	}
 
-	_, privKeyPath1, pubKeyPath1 := keypair(t, td1)
+	_, privKeyPath1, pubKeyPath1 := keypair(t, td)
 
 	ctx := context.Background()
 
@@ -1556,6 +1647,7 @@ func TestSignBlobRFC3161TimestampBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Point to a fake rekor server to make sure offline verification of the tlog entry works
+	verifyBlobCmd.RekorURL = "notreal"
 	verifyBlobCmd.IgnoreTlog = false
 	must(verifyBlobCmd.Exec(ctx, bp), t)
 }
@@ -1775,6 +1867,11 @@ func TestUploadDownload(t *testing.T) {
 }
 
 func TestSaveLoad(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		description     string
 		getSignedEntity func(t *testing.T, n string) (name.Reference, *remote.Descriptor, func())
@@ -1803,12 +1900,18 @@ func TestSaveLoad(t *testing.T) {
 
 			ctx := context.Background()
 			// Now sign the image and verify it
-			ko := options.KeyOpts{KeyRef: privKeyPath, PassFunc: passFunc}
+			ko := options.KeyOpts{
+				KeyRef:           privKeyPath,
+				PassFunc:         passFunc,
+				RekorURL:         rekorURL,
+				SkipConfirmation: true,
+			}
 			so := options.SignOptions{
-				Upload: true,
+				Upload:     true,
+				TlogUpload: true,
 			}
 			must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
-			must(verify(pubKeyPath, imgName, true, nil, ""), t)
+			must(verify(pubKeyPath, imgName, true, nil, "", false), t)
 
 			// save the image to a temp dir
 			imageDir := t.TempDir()
@@ -1820,7 +1923,7 @@ func TestSaveLoad(t *testing.T) {
 			// load the image from the temp dir into a new image and verify the new image
 			imgName2 := path.Join(repo, fmt.Sprintf("save-load-%d-2", i))
 			must(cli.LoadCmd(ctx, options.LoadOptions{Directory: imageDir}, imgName2), t)
-			must(verify(pubKeyPath, imgName2, true, nil, ""), t)
+			must(verify(pubKeyPath, imgName2, true, nil, "", false), t)
 		})
 	}
 }
@@ -1886,9 +1989,14 @@ func TestSaveLoadBulk(t *testing.T) {
 }
 
 func TestSaveLoadAttestation(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	repo, stop := reg(t)
 	defer stop()
-	td := t.TempDir()
 
 	imgName := path.Join(repo, "save-load")
 
@@ -1899,12 +2007,18 @@ func TestSaveLoadAttestation(t *testing.T) {
 
 	ctx := context.Background()
 	// Now sign the image and verify it
-	ko := options.KeyOpts{KeyRef: privKeyPath, PassFunc: passFunc}
+	ko := options.KeyOpts{
+		KeyRef:           privKeyPath,
+		PassFunc:         passFunc,
+		RekorURL:         rekorURL,
+		SkipConfirmation: true,
+	}
 	so := options.SignOptions{
-		Upload: true,
+		Upload:     true,
+		TlogUpload: true,
 	}
 	must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
-	must(verify(pubKeyPath, imgName, true, nil, ""), t)
+	must(verify(pubKeyPath, imgName, true, nil, "", false), t)
 
 	// now, append an attestation to the image
 	slsaAttestation := `{ "buildType": "x", "builder": { "id": "2" }, "recipe": {} }`
@@ -1931,7 +2045,7 @@ func TestSaveLoadAttestation(t *testing.T) {
 	// load the image from the temp dir into a new image and verify the new image
 	imgName2 := path.Join(repo, "save-load-2")
 	must(cli.LoadCmd(ctx, options.LoadOptions{Directory: imageDir}, imgName2), t)
-	must(verify(pubKeyPath, imgName2, true, nil, ""), t)
+	must(verify(pubKeyPath, imgName2, true, nil, "", false), t)
 	// Use cue to verify attestation on the new image
 	policyPath := filepath.Join(td, "policy.cue")
 	verifyAttestation := cliverify.VerifyAttestationCommand{
@@ -1953,6 +2067,12 @@ func TestSaveLoadAttestation(t *testing.T) {
 }
 
 func TestAttachSBOM(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	repo, stop := reg(t)
 	defer stop()
 	ctx := context.Background()
@@ -1967,7 +2087,7 @@ func TestAttachSBOM(t *testing.T) {
 	if errPl == nil {
 		t.Fatalf("Expected error when passing Platform to single arch image")
 	}
-	_, err := download.SBOMCmd(ctx, options.RegistryOptions{}, options.SBOMDownloadOptions{}, img.Name(), &out)
+	_, err = download.SBOMCmd(ctx, options.RegistryOptions{}, options.SBOMDownloadOptions{}, img.Name(), &out)
 	if err == nil {
 		t.Fatal("Expected error")
 	}
@@ -2000,20 +2120,25 @@ func TestAttachSBOM(t *testing.T) {
 	_, _, pubKeyPath2 := keypair(t, td2)
 
 	// Verify should fail on a bad input
-	mustErr(verify(pubKeyPath1, imgName, true, nil, "sbom"), t)
-	mustErr(verify(pubKeyPath2, imgName, true, nil, "sbom"), t)
+	mustErr(verify(pubKeyPath1, imgName, true, nil, "sbom", false), t)
+	mustErr(verify(pubKeyPath2, imgName, true, nil, "sbom", false), t)
 
 	// Now sign the sbom with one key
-	ko1 := options.KeyOpts{KeyRef: privKeyPath1, PassFunc: passFunc}
+	ko1 := options.KeyOpts{
+		KeyRef:   privKeyPath1,
+		PassFunc: passFunc,
+		RekorURL: rekorURL,
+	}
 	so := options.SignOptions{
 		Upload:     true,
+		TlogUpload: true,
 		Attachment: "sbom",
 	}
 	must(sign.SignCmd(ro, ko1, so, []string{imgName}), t)
 
 	// Now verify should work with that one, but not the other
-	must(verify(pubKeyPath1, imgName, true, nil, "sbom"), t)
-	mustErr(verify(pubKeyPath2, imgName, true, nil, "sbom"), t)
+	must(verify(pubKeyPath1, imgName, true, nil, "sbom", false), t)
+	mustErr(verify(pubKeyPath2, imgName, true, nil, "sbom", false), t)
 }
 
 func TestAttachSBOM_bom_flag(t *testing.T) {
@@ -2107,56 +2232,6 @@ func TestAttachSBOM_bom_flag(t *testing.T) {
 	}
 }
 
-func setenv(t *testing.T, k, v string) func() {
-	if err := os.Setenv(k, v); err != nil {
-		t.Fatalf("error setting env: %v", err)
-	}
-	return func() {
-		os.Unsetenv(k)
-	}
-}
-
-func TestTlog(t *testing.T) {
-	repo, stop := reg(t)
-	defer stop()
-	td := t.TempDir()
-
-	imgName := path.Join(repo, "cosign-e2e")
-
-	_, _, cleanup := mkimage(t, imgName)
-	defer cleanup()
-
-	_, privKeyPath, pubKeyPath := keypair(t, td)
-
-	// Verify should fail at first
-	mustErr(verify(pubKeyPath, imgName, true, nil, ""), t)
-
-	// Now sign the image without the tlog
-	ko := options.KeyOpts{
-		KeyRef:   privKeyPath,
-		PassFunc: passFunc,
-		RekorURL: rekorURL,
-	}
-	so := options.SignOptions{
-		Upload: true,
-	}
-	must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
-
-	// Now verify should work!
-	must(verify(pubKeyPath, imgName, true, nil, ""), t)
-
-	// TODO: priyawadhwa@ to figure out how to add an entry to the tlog without using keyless signing
-	// We could add an --upload-tlog flag, but it's a bit weird since we have a --no-upload-tlog flag too right now.
-
-	// Verify shouldn't work since we haven't put anything in it yet.
-	// mustErr(verify(pubKeyPath, imgName, true, nil, ""), t)
-
-	// // Sign again with the tlog env var on
-	// must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
-	// // And now verify works!
-	// must(verify(pubKeyPath, imgName, true, nil, ""), t)
-}
-
 func TestNoTlog(t *testing.T) {
 	repo, stop := reg(t)
 	defer stop()
@@ -2170,7 +2245,7 @@ func TestNoTlog(t *testing.T) {
 	_, privKeyPath, pubKeyPath := keypair(t, td)
 
 	// Verify should fail at first
-	mustErr(verify(pubKeyPath, imgName, true, nil, ""), t)
+	mustErr(verify(pubKeyPath, imgName, true, nil, "", true), t)
 
 	// Now sign the image without the tlog
 	ko := options.KeyOpts{
@@ -2184,18 +2259,7 @@ func TestNoTlog(t *testing.T) {
 	must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
 
 	// Now verify should work!
-	must(verify(pubKeyPath, imgName, true, nil, ""), t)
-
-	// TODO: Uncomment once we have a way to tell `cosign verify` that we want to verify with a public key
-	// and a tlog entry
-
-	// // Sign again and make sure tlog upload is set to false
-	// so = options.SignOptions{
-	// 	TlogUpload: false,
-	// }
-	// must(sign.SignCmd(ro, ko, so, []string{imgName}), t)
-	// // And verify it still fails.
-	// mustErr(verify(pubKeyPath, imgName, true, nil, ""), t)
+	must(verify(pubKeyPath, imgName, true, nil, "", true), t)
 }
 
 func TestGetPublicKeyCustomOut(t *testing.T) {
@@ -2241,6 +2305,16 @@ func mkfile(contents, td string, t *testing.T) string {
 		t.Fatal(err)
 	}
 	return f.Name()
+}
+
+func mkfileWithExt(contents, td, ext string, t *testing.T) string {
+	f := mkfile(contents, td, t)
+	newName := f + ext
+	err := os.Rename(f, newName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newName
 }
 
 func mkimage(t *testing.T, n string) (name.Reference, *remote.Descriptor, func()) {
@@ -2350,9 +2424,14 @@ func registryClientOpts(ctx context.Context) []remote.Option {
 //  3. Take the bundle from image1 and store it on the signature in image2
 //  4. Verification of image2 should now fail, since the bundle is for a different signature
 func TestInvalidBundle(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	regName, stop := reg(t)
 	defer stop()
-	td := t.TempDir()
 
 	img1 := path.Join(regName, "cosign-e2e")
 
@@ -2374,7 +2453,7 @@ func TestInvalidBundle(t *testing.T) {
 	}
 	must(sign.SignCmd(ro, ko, so, []string{img1}), t)
 	// verify image1
-	must(verify(pubKeyPath, img1, true, nil, ""), t)
+	must(verify(pubKeyPath, img1, true, nil, "", false), t)
 	// extract the bundle from image1
 	si, err := ociremote.SignedImage(imgRef, remoteOpts)
 	must(err, t)
@@ -2393,7 +2472,6 @@ func TestInvalidBundle(t *testing.T) {
 
 	// Now, we move on to image2
 	// Sign image2 and DO NOT store the entry in rekor
-	defer setenv(t, env.VariableExperimental.String(), "0")()
 	img2 := path.Join(regName, "unrelated")
 	imgRef2, _, cleanup := mkimage(t, img2)
 	defer cleanup()
@@ -2402,7 +2480,7 @@ func TestInvalidBundle(t *testing.T) {
 		TlogUpload: false,
 	}
 	must(sign.SignCmd(ro, ko, so, []string{img2}), t)
-	must(verify(pubKeyPath, img2, true, nil, ""), t)
+	must(verify(pubKeyPath, img2, true, nil, "", true), t)
 
 	si2, err := ociremote.SignedEntity(imgRef2, remoteOpts)
 	must(err, t)
@@ -2424,7 +2502,7 @@ func TestInvalidBundle(t *testing.T) {
 	if err := remote.Delete(sigsTag); err != nil {
 		t.Fatal(err)
 	}
-	mustErr(verify(pubKeyPath, img2, true, nil, ""), t)
+	mustErr(verify(pubKeyPath, img2, true, nil, "", false), t)
 
 	newSig, err := mutate.Signature(gottenSigs2[0], mutate.WithBundle(bund))
 	must(err, t)
@@ -2518,9 +2596,14 @@ func TestAttestBlobSignVerify(t *testing.T) {
 }
 
 func TestOffline(t *testing.T) {
+	td := t.TempDir()
+	err := downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), td)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	regName, stop := reg(t)
 	defer stop()
-	td := t.TempDir()
 
 	img1 := path.Join(regName, "cosign-e2e")
 
@@ -2540,9 +2623,10 @@ func TestOffline(t *testing.T) {
 	}
 	must(sign.SignCmd(ro, ko, so, []string{img1}), t)
 	// verify image1 online and offline
-	must(verify(pubKeyPath, img1, true, nil, ""), t)
+	must(verify(pubKeyPath, img1, true, nil, "", false), t)
 	verifyCmd := &cliverify.VerifyCommand{
 		KeyRef:      pubKeyPath,
+		RekorURL:    "notreal",
 		Offline:     true,
 		CheckClaims: true,
 		MaxWorkers:  10,
@@ -2576,11 +2660,311 @@ func TestOffline(t *testing.T) {
 	newImage, err := mutate.AttachSignatureToEntity(si, newSig)
 	must(err, t)
 
-	mustErr(verify(pubKeyPath, img1, true, nil, ""), t)
+	mustErr(verify(pubKeyPath, img1, true, nil, "", false), t)
 	if err := ociremote.WriteSignatures(sigsTag.Repository, newImage); err != nil {
 		t.Fatal(err)
 	}
 
 	// Confirm offline verification fails
 	mustErr(verifyCmd.Exec(ctx, []string{img1}), t)
+}
+
+func TestDockerfileVerify(t *testing.T) {
+	td := t.TempDir()
+
+	// set up SIGSTORE_ variables to point to keys for the local instances
+	err := setLocalEnv(t, td)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// unset the roots that were generated for timestamp signing, they won't work here
+	err = fulcioroots.ReInit()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	identityToken, err := getOIDCToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// create some images
+	repo, stop := reg(t)
+	defer stop()
+	signedImg1 := path.Join(repo, "cosign-e2e-dockerfile-signed1")
+	_, _, cleanup1 := mkimage(t, signedImg1)
+	defer cleanup1()
+	signedImg2 := path.Join(repo, "cosign-e2e-dockerfile-signed2")
+	_, _, cleanup2 := mkimage(t, signedImg2)
+	defer cleanup2()
+	unsignedImg := path.Join(repo, "cosign-e2e-dockerfile-unsigned")
+	_, _, cleanupUnsigned := mkimage(t, unsignedImg)
+	defer cleanupUnsigned()
+
+	// sign the images using --identity-token
+	ko := options.KeyOpts{
+		FulcioURL:        fulcioURL,
+		RekorURL:         rekorURL,
+		IDToken:          identityToken,
+		SkipConfirmation: true,
+	}
+	so := options.SignOptions{
+		Upload:           true,
+		TlogUpload:       true,
+		SkipConfirmation: true,
+	}
+	ctx := context.Background()
+	must(sign.SignCmd(ro, ko, so, []string{signedImg1}), t)
+	must(sign.SignCmd(ro, ko, so, []string{signedImg2}), t)
+
+	// create the dockerfiles
+	singleStageDockerfileContents := fmt.Sprintf(`
+FROM %s
+`, signedImg1)
+	singleStageDockerfile := mkfile(singleStageDockerfileContents, td, t)
+
+	unsignedBuildStageDockerfileContents := fmt.Sprintf(`
+FROM %s
+
+FROM %s
+
+FROM %s
+`, signedImg1, unsignedImg, signedImg2)
+	unsignedBuildStageDockerfile := mkfile(unsignedBuildStageDockerfileContents, td, t)
+
+	fromAsDockerfileContents := fmt.Sprintf(`
+FROM --platform=linux/amd64 %s AS base
+`, signedImg1)
+	fromAsDockerfile := mkfile(fromAsDockerfileContents, td, t)
+
+	withArgDockerfileContents := `
+ARG test_image
+
+FROM ${test_image}
+`
+	withArgDockerfile := mkfile(withArgDockerfileContents, td, t)
+
+	withLowercaseDockerfileContents := fmt.Sprintf(`
+from %s
+`, signedImg1)
+	withLowercaseDockerfile := mkfile(withLowercaseDockerfileContents, td, t)
+
+	issuer := os.Getenv("OIDC_URL")
+
+	tests := []struct {
+		name       string
+		dockerfile string
+		baseOnly   bool
+		env        map[string]string
+		wantErr    bool
+	}{
+		{
+			name:       "verify single stage",
+			dockerfile: singleStageDockerfile,
+		},
+		{
+			name:       "verify unsigned build stage",
+			dockerfile: unsignedBuildStageDockerfile,
+			wantErr:    true,
+		},
+		{
+			name:       "verify base image only",
+			dockerfile: unsignedBuildStageDockerfile,
+			baseOnly:   true,
+		},
+		{
+			name:       "verify from as",
+			dockerfile: fromAsDockerfile,
+		},
+		{
+			name:       "verify with arg",
+			dockerfile: withArgDockerfile,
+			env:        map[string]string{"test_image": signedImg1},
+		},
+		{
+			name:       "verify image exists but is unsigned",
+			dockerfile: withArgDockerfile,
+			env:        map[string]string{"test_image": unsignedImg},
+			wantErr:    true,
+		},
+		{
+			name:       "verify with lowercase",
+			dockerfile: withLowercaseDockerfile,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := dockerfile.VerifyDockerfileCommand{
+				VerifyCommand: cliverify.VerifyCommand{
+					CertVerifyOptions: options.CertVerifyOptions{
+						CertOidcIssuer: issuer,
+						CertIdentity:   certID,
+					},
+					RekorURL: rekorURL,
+				},
+				BaseOnly: test.baseOnly,
+			}
+			args := []string{test.dockerfile}
+			for k, v := range test.env {
+				t.Setenv(k, v)
+			}
+			if test.wantErr {
+				mustErr(cmd.Exec(ctx, args), t)
+			} else {
+				must(cmd.Exec(ctx, args), t)
+			}
+		})
+	}
+}
+
+func TestManifestVerify(t *testing.T) {
+	td := t.TempDir()
+
+	// set up SIGSTORE_ variables to point to keys for the local instances
+	err := setLocalEnv(t, td)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// unset the roots that were generated for timestamp signing, they won't work here
+	err = fulcioroots.ReInit()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	identityToken, err := getOIDCToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// create some images
+	repo, stop := reg(t)
+	defer stop()
+	signedImg := path.Join(repo, "cosign-e2e-manifest-signed")
+	_, _, cleanup := mkimage(t, signedImg)
+	defer cleanup()
+	unsignedImg := path.Join(repo, "cosign-e2e-manifest-unsigned")
+	_, _, cleanupUnsigned := mkimage(t, unsignedImg)
+	defer cleanupUnsigned()
+
+	// sign the images using --identity-token
+	ko := options.KeyOpts{
+		FulcioURL:        fulcioURL,
+		RekorURL:         rekorURL,
+		IDToken:          identityToken,
+		SkipConfirmation: true,
+	}
+	so := options.SignOptions{
+		Upload:           true,
+		TlogUpload:       true,
+		SkipConfirmation: true,
+	}
+	ctx := context.Background()
+	must(sign.SignCmd(ro, ko, so, []string{signedImg}), t)
+
+	// create the manifests
+	manifestTemplate := `
+apiVersion: v1
+kind: Pod
+metadata:
+  name: single-pod
+spec:
+  containers:
+    - name: %s
+      image: %s
+`
+	signedManifestContents := fmt.Sprintf(manifestTemplate, "signed-img", signedImg)
+	signedManifest := mkfileWithExt(signedManifestContents, td, ".yaml", t)
+	unsignedManifestContents := fmt.Sprintf(manifestTemplate, "unsigned-img", unsignedImg)
+	unsignedManifest := mkfileWithExt(unsignedManifestContents, td, ".yaml", t)
+
+	issuer := os.Getenv("OIDC_URL")
+
+	tests := []struct {
+		name     string
+		manifest string
+		wantErr  bool
+	}{
+		{
+			name:     "signed manifest",
+			manifest: signedManifest,
+		},
+		{
+			name:     "unsigned manifest",
+			manifest: unsignedManifest,
+			wantErr:  true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := manifest.VerifyManifestCommand{
+				VerifyCommand: cliverify.VerifyCommand{
+					CertVerifyOptions: options.CertVerifyOptions{
+						CertOidcIssuer: issuer,
+						CertIdentity:   certID,
+					},
+					RekorURL: rekorURL,
+				},
+			}
+			args := []string{test.manifest}
+			if test.wantErr {
+				mustErr(cmd.Exec(ctx, args), t)
+			} else {
+				must(cmd.Exec(ctx, args), t)
+			}
+		})
+	}
+}
+
+// getOIDCToken gets an OIDC token from the mock OIDC server.
+func getOIDCToken() (string, error) {
+	issuer := os.Getenv("OIDC_URL")
+	resp, err := http.Get(issuer + "/token")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+func setLocalEnv(t *testing.T, dir string) error {
+	// fulcio repo is downloaded to the user's home directory by e2e_test.sh
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("error getting home directory: %w", err)
+	}
+	t.Setenv(env.VariableSigstoreCTLogPublicKeyFile.String(), path.Join(home, "fulcio/config/ctfe/pubkey.pem"))
+	err = downloadAndSetEnv(t, fulcioURL+"/api/v1/rootCert", env.VariableSigstoreRootFile.String(), dir)
+	if err != nil {
+		return fmt.Errorf("error setting %s env var: %w", env.VariableSigstoreRootFile.String(), err)
+	}
+	err = downloadAndSetEnv(t, rekorURL+"/api/v1/log/publicKey", env.VariableSigstoreRekorPublicKey.String(), dir)
+	if err != nil {
+		return fmt.Errorf("error setting %s env var: %w", env.VariableSigstoreRekorPublicKey.String(), err)
+	}
+	return nil
+}
+
+func downloadAndSetEnv(t *testing.T, url, envVar, dir string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("error downloading file: %w", err)
+	}
+	defer resp.Body.Close()
+	f, err := os.CreateTemp(dir, "")
+	if err != nil {
+		return fmt.Errorf("error creating temp file: %w", err)
+	}
+	defer f.Close()
+	_, err = io.Copy(f, resp.Body)
+	if err != nil {
+		return fmt.Errorf("error writing to file: %w", err)
+	}
+	t.Setenv(envVar, f.Name())
+	return nil
 }
