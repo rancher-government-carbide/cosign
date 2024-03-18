@@ -137,8 +137,6 @@ func getImageRef(ref name.Reference) (string, error) {
 	}
 	registry := ref.Context().RegistryStr() + "/"
 	imageRef := ref.Name()
-	if strings.HasPrefix(imageRef, registry) {
-		imageRef = imageRef[len(registry):]
-	}
+	imageRef = strings.TrimPrefix(imageRef, registry)
 	return imageRef, nil
 }

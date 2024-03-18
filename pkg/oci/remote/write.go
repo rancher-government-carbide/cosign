@@ -169,6 +169,9 @@ func WriteSignedImageIndexImagesBulk(targetRegistry string, sii oci.SignedImageI
 			}
 			if sigs != nil { // will be nil if there are no associated signatures
 				ref, err := name.ParseReference(targetRegistry + "/" + imgTitle)
+				if err != nil {
+					return err
+				}
 				sigsTag, err := SignatureTag(ref, opts...)
 				if err != nil {
 					return fmt.Errorf("sigs tag: %w", err)
@@ -190,6 +193,9 @@ func WriteSignedImageIndexImagesBulk(targetRegistry string, sii oci.SignedImageI
 			}
 			if atts != nil { // will be nil if there are no associated attestations
 				ref, err := name.ParseReference(targetRegistry + "/" + imgTitle)
+				if err != nil {
+					return err
+				}
 				attsTag, err := AttestationTag(ref, opts...)
 				if err != nil {
 					return fmt.Errorf("sigs tag: %w", err)
@@ -211,6 +217,9 @@ func WriteSignedImageIndexImagesBulk(targetRegistry string, sii oci.SignedImageI
 			}
 			if sboms != nil { // will be nil if there are no associated attestations
 				ref, err := name.ParseReference(targetRegistry + "/" + imgTitle)
+				if err != nil {
+					return err
+				}
 				sbomsTag, err := SBOMTag(ref, opts...)
 				if err != nil {
 					return fmt.Errorf("sboms tag: %w", err)
