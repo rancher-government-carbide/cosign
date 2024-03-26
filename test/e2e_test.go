@@ -1819,7 +1819,7 @@ func TestSaveLoad(t *testing.T) {
 
 			// load the image from the temp dir into a new image and verify the new image
 			imgName2 := path.Join(repo, fmt.Sprintf("save-load-%d-2", i))
-			must(cli.LoadCmd(ctx, options.LoadOptions{Directory: imageDir}, imgName2), t)
+			must(cli.LoadCmd(ctx, options.LoadOptions{Directory: imageDir, Registry: ""}, imgName2), t)
 			must(verify(pubKeyPath, imgName2, true, nil, ""), t)
 		})
 	}
