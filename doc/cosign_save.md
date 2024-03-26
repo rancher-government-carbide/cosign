@@ -19,8 +19,10 @@ cosign save [flags]
 ### Options
 
 ```
-      --dir string   path to dir where the signed image should be stored on disk
-  -h, --help         help for save
+  -c, --cache-path string   path to cache image layers
+      --dir string          path to dir where the signed image should be stored on disk
+  -h, --help                help for save
+      --platform string     only save container image and its signatures for a specific platform image
 ```
 
 ### Options inherited from parent commands
