@@ -1817,14 +1817,9 @@ func TestSaveLoad(t *testing.T) {
 			// verify the local image using a local key
 			must(verifyLocal(pubKeyPath, imageDir, true, nil, ""), t)
 
-			// set up empty registry option to satisfy LoadCmd
-			ro := options.RegistryOptions{
-				Name: "",
-			}
-
 			// load the image from the temp dir into a new image and verify the new image
 			imgName2 := path.Join(repo, fmt.Sprintf("save-load-%d-2", i))
-			must(cli.LoadCmd(ctx, options.LoadOptions{Directory: imageDir, Registry: ro}, imgName2), t)
+			cli.LoadCmd(ctx, options.LoadOptions{Directory: imageDir}, imgName2)
 			must(verify(pubKeyPath, imgName2, true, nil, ""), t)
 		})
 	}
