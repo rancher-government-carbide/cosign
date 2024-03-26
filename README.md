@@ -50,6 +50,17 @@ $ $(go env GOPATH)/bin/cosign
 
 If you are interested in contributing to `cosign`, please read the [contributing documentation](./CONTRIBUTING.md).
 
+Future Cosign development will be focused the next major release which will be based on
+[sigstore-go](https://github.com/sigstore/sigstore-go). Maintainers will be focused on feature development within
+sigstore-go. Contributions to sigstore-go, particularly around bring-your-own keys and signing, are appreciated.
+Please see the [issue tracker](https://github.com/sigstore/sigstore-go/issues) for good first issues.
+
+Cosign 2.x is a stable release and will continue to receive periodic feature updates and bug fixes. PRs
+that are small in scope and size are most likely to be quickly reviewed.
+
+PRs which significantly modify or break the API will not be accepted. PRs which are significant in size but do not
+introduce breaking changes may be accepted, but will be considered lower priority than PRs in sigstore-go.
+
 ## Dockerfile
 
 Here is how to install and use cosign inside a Dockerfile through the gcr.io/projectsigstore/cosign image:
@@ -66,7 +77,7 @@ ENTRYPOINT [ "cosign" ]
 ## Quick Start
 
 This shows how to:
-* sign a container image with the default "keyless signing" method (see [KEYLESS.md](./KEYLESS.md))
+* sign a container image with the default identity-based "keyless signing" method (see [the documentation for more information](https://docs.sigstore.dev/signing/overview/))
 * verify the container image
 
 ### Sign a container and store the signature in the registry
@@ -102,7 +113,7 @@ Cosign will then store the signature and certificate in the Rekor transparency l
 
 ### Verify a container
 
-To verify the image, you'll need to pass in the expected certificate issuer and certificate subject via the `--certificate-identity` and `--certificate-oidc-issuer` flags:
+To verify the image, you'll need to pass in the expected certificate subject and certificate issuer via the `--certificate-identity` and `--certificate-oidc-issuer` flags:
 
 ```
 cosign verify $IMAGE --certificate-identity=$IDENTITY --certificate-oidc-issuer=$OIDC_ISSUER
@@ -178,6 +189,8 @@ OCI registries are useful for storing more than just container images!
 `Cosign` also includes some utilities for publishing generic artifacts, including binaries, scripts, and configuration files using the OCI protocol.
 
 This section shows how to leverage these for an easy-to-use, backwards-compatible artifact distribution system that integrates well with the rest of Sigstore.
+
+See [the documentation](https://docs.sigstore.dev/signing/other_types/) for more information.
 
 ### Blobs
 
@@ -300,15 +313,11 @@ $ cosign verify-attestation --key cosign.pub $IMAGE_URI
 
 ## Detailed Usage
 
-See the [Usage documentation](USAGE.md) for more commands!
+See the [Usage documentation](https://docs.sigstore.dev/signing/overview/) for more information.
 
 ## Hardware-based Tokens
 
-See the [Hardware Tokens documentation](TOKENS.md) for information on how to use `cosign` with hardware.
-
-## Keyless
-
-🚨 🚨 🚨 See [here](KEYLESS.md) for info on the experimental Keyless signatures mode. 🚨 🚨 🚨
+See the [Hardware Tokens documentation](https://docs.sigstore.dev/key_management/hardware-based-tokens/) for information on how to use `cosign` with hardware.
 
 ## Registry Support
 
@@ -335,7 +344,7 @@ Today, `cosign` has been tested and works against the following registries:
 * Cloudsmith Container Registry
 * The CNCF zot Registry
 
-We aim for wide registry support. To `sign` images in registries which do not yet fully support [OCI media types](https://github.com/sigstore/cosign/blob/main/SPEC.md#object-types), one may need to use `COSIGN_DOCKER_MEDIA_TYPES` to fall back to legacy equivalents. For example:
+We aim for wide registry support. To `sign` images in registries which do not yet fully support [OCI media types](https://github.com/sigstore/cosign/blob/main/specs/SIGNATURE_SPEC.md), one may need to use `COSIGN_DOCKER_MEDIA_TYPES` to fall back to legacy equivalents. For example:
 
 ```shell
 COSIGN_DOCKER_MEDIA_TYPES=1 cosign sign --key cosign.key legacy-registry.example.com/my/image@$DIGEST
@@ -344,25 +353,13 @@ COSIGN_DOCKER_MEDIA_TYPES=1 cosign sign --key cosign.key legacy-registry.example
 Please help test and file bugs if you see issues!
 Instructions can be found in the [tracking issue](https://github.com/sigstore/cosign/issues/40).
 
-
 ## Caveats
 
 ### Intentionally Missing Features
 
-`cosign` only generates ECDSA-P256 keys and uses SHA256 hashes.
+`cosign` only generates ECDSA-P256 keys and uses SHA256 hashes, for both ephemeral keyless signing and managed key signing.
 Keys are stored in PEM-encoded PKCS8 format.
 However, you can use `cosign` to store and retrieve signatures in any format, from any algorithm.
-
-### Unintentionally Missing Features
-
-`cosign` will integrate with transparency logs!
-See https://github.com/sigstore/cosign/issues/34 for more info.
-
-`cosign` will integrate with even more transparency logs, and a PKI.
-See https://github.com/sigStore/fulcio for more info.
-
-`cosign` will also support The Update Framework for delegations, key discovery and expiration.
-See https://github.com/sigstore/cosign/issues/86 for more info!
 
 ### Things That Should Probably Change
 
@@ -493,7 +490,7 @@ The proposed mechanism is flexible enough to support signing arbitrary things.
 `cosign` supports using a KMS provider to generate and sign keys.
 Right now cosign supports Hashicorp Vault, AWS KMS, GCP KMS, Azure Key Vault and we are hoping to support more in the future!
 
-See the [KMS docs](KMS.md) for more details.
+See the [KMS docs](https://docs.sigstore.dev/key_management/overview/) for more details.
 
 ### OCI Artifacts
 
@@ -549,17 +546,6 @@ signatures in the registry.
 
 I believe this tool is complementary to TUF, and they can be used together.
 I haven't tried yet, but think we can also reuse a registry for TUF storage.
-
-### Why not use Blockchain?
-
-Just kidding. Nobody actually asked this. Don't be that person.
-
-### Why not use $FOO?
-
-See the next section, [Requirements](#Requirements).
-I designed this tool to meet a few specific requirements, and didn't find
-anything else that met all of these.
-If you're aware of another system that does meet these, please let me know!
 
 ## Design Requirements
 
@@ -764,10 +750,9 @@ $ crane manifest dlorenc/demo@sha256:71f70e5d29bde87f988740665257c35b1c6f52dafa2
 
 ## Release Cadence
 
-We are intending to move to a monthly cadence for minor releases.
-Minor releases will be published around the beginning of the month.
-We may cut a patch release instead, if the changes are small enough not to warrant a minor release.
-We will also cut patch releases periodically as needed to address bugs.
+We cut releases as needed. Patch releases are cut to fix small bugs. Minor releases are
+cut periodically when there are multiple bugs fixed or features added. Major releases
+will be released when there are breaking features.
 
 ## Security
 
