@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -112,6 +113,9 @@ func WriteSignedImageIndexImages(ref name.Reference, sii oci.SignedImageIndex, o
 // Bulk version.  Uses targetRegistry for multiple images/sigs/atts.
 // This includes the signed image and associated signatures in the image index
 func WriteSignedImageIndexImagesBulk(targetRegistry string, sii oci.SignedImageIndex, opts ...Option) error {
+	// enable the progress logs to be printed to stdout
+	logs.Progress.SetOutput(os.Stdout)
+
 	// loop through all of the items in the manifest
 	manifest, err := sii.IndexManifest()
 	if err != nil {
@@ -169,6 +173,9 @@ func WriteSignedImageIndexImagesBulk(targetRegistry string, sii oci.SignedImageI
 			}
 			if sigs != nil { // will be nil if there are no associated signatures
 				ref, err := name.ParseReference(targetRegistry + "/" + imgTitle)
+				if err != nil {
+					return err
+				}
 				sigsTag, err := SignatureTag(ref, opts...)
 				if err != nil {
 					return fmt.Errorf("sigs tag: %w", err)
@@ -190,6 +197,9 @@ func WriteSignedImageIndexImagesBulk(targetRegistry string, sii oci.SignedImageI
 			}
 			if atts != nil { // will be nil if there are no associated attestations
 				ref, err := name.ParseReference(targetRegistry + "/" + imgTitle)
+				if err != nil {
+					return err
+				}
 				attsTag, err := AttestationTag(ref, opts...)
 				if err != nil {
 					return fmt.Errorf("sigs tag: %w", err)
@@ -211,6 +221,9 @@ func WriteSignedImageIndexImagesBulk(targetRegistry string, sii oci.SignedImageI
 			}
 			if sboms != nil { // will be nil if there are no associated attestations
 				ref, err := name.ParseReference(targetRegistry + "/" + imgTitle)
+				if err != nil {
+					return err
+				}
 				sbomsTag, err := SBOMTag(ref, opts...)
 				if err != nil {
 					return fmt.Errorf("sboms tag: %w", err)
