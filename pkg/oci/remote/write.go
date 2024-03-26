@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -112,6 +113,9 @@ func WriteSignedImageIndexImages(ref name.Reference, sii oci.SignedImageIndex, o
 // Bulk version.  Uses targetRegistry for multiple images/sigs/atts.
 // This includes the signed image and associated signatures in the image index
 func WriteSignedImageIndexImagesBulk(targetRegistry string, sii oci.SignedImageIndex, opts ...Option) error {
+	// enable the progress logs to be printed to stdout
+	logs.Progress.SetOutput(os.Stdout)
+
 	// loop through all of the items in the manifest
 	manifest, err := sii.IndexManifest()
 	if err != nil {
